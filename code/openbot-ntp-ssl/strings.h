@@ -5,7 +5,7 @@ typedef struct
      String punctuation;
  }  message;
 
-const short numberOpenStrings = 7;
+const short numberOpenStrings = 6;
 const short numberClosedStrings = 3;
 
 // Format: (message)+(number selected on dial)+" hours"+(punctuation)+" (Until ~"+closing_hour:minute+")"

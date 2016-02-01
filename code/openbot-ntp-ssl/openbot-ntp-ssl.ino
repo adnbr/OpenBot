@@ -30,6 +30,7 @@
 #define LIGHT_OFF          0          
 
 #define EEPROM_ADDRESS     0
+#define EEPROM_OK          100
 
 #define UP                 1
 #define DOWN               2
@@ -41,11 +42,12 @@ WiFiUDP udp;
 
 // Port to listen on for UDP packets
 const unsigned short localUDPPort = 2390;
-IPAddress timeServerIP; 
-const char* ntpServerName = "1.uk.pool.ntp.org";
+
+IPAddress timeServerIP;  
+const char* ntpServerName = "pool.ntp.org";
 
 const int NTP_PACKET_SIZE = 48;
-byte packetBuffer[ NTP_PACKET_SIZE]; 
+byte packetBuffer[NTP_PACKET_SIZE]; 
 
 //United Kingdom (London, Belfast, Edinburgh)
 TimeChangeRule BST = {"BST", Last, Sun, Mar, 1, 60};        // British Summer Time
@@ -62,14 +64,17 @@ unsigned long lastKnobCheck;
 time_t getNtpTime()
 {
   while (udp.parsePacket() > 0) ; // discard any previously received packets
+  
   Serial.println("Transmit NTP Request");
   sendNTPpacket(timeServerIP);
+  
   uint32_t beginWait = millis();
-  while (millis() - beginWait < 1500) {
+  
+  while (millis() - beginWait < 2000) {
     int size = udp.parsePacket();
     if (size >= NTP_PACKET_SIZE) {
       
-      Serial.println("Receive NTP Response");
+      Serial.println("Received NTP Response");
 
       // Read packet into buffer
       udp.read(packetBuffer, NTP_PACKET_SIZE);
@@ -84,12 +89,12 @@ time_t getNtpTime()
       // Calculate epoch and calculate the local time from this. 
       time_t utc = secsSince1900 - 2208988800UL;
       localTime = UK.toLocal(utc);
-      
+          
       return utc;
     }
   }
 
-  Serial.println("No response from NTP server (" + String(ntpServerName) + ", " + timeServerIP + ")");
+  Serial.println("No response from NTP server (" + String(ntpServerName) + ")");
   return 0;
 }
 
@@ -122,6 +127,7 @@ void sendNTPpacket(IPAddress &address)
 void eepromWriteCheckValue(int value) {
   byte lowByte = ((value >> 0) & 0xFF);
   EEPROM.write(EEPROM_ADDRESS, lowByte);
+  EEPROM.commit();
 }
 
 unsigned int eepromReadCheckValue() {
@@ -189,6 +195,7 @@ bool sendHTTPRequest(String httpRequest, int hours) {
     
     // Try and connect to the API host. Restart at 5x failures.
     int failCount = 0;
+    
     while (!client.connect(api_host, api_port)) {
       failCount++;
       Serial.println("Connection to '"+ String(api_host) + ":" + String(api_port) + "' failed on attempt " + String(failCount) + ". Waiting 1 second to retry.");
@@ -210,7 +217,7 @@ bool sendHTTPRequest(String httpRequest, int hours) {
     
     Serial.println("Sending HTTP Request:");
     Serial.println(httpRequest);
-    Serial.print("\n\n\n\n\n\n");
+    Serial.print("\n\n");
 
     // Wait for max 8 seconds for reply, otherwise exit.
     unsigned long timeout = millis() + 8000;
@@ -226,7 +233,7 @@ bool sendHTTPRequest(String httpRequest, int hours) {
     while(client.available()){
       Serial.print(client.readStringUntil('\r'));
     }
-    Serial.print("\n\n\n\n\n\n");
+    Serial.print("\n\n");
 
     // Close the connection, we're done here.
     Serial.println("Closing connection with '" + String(api_host) + "'");
@@ -234,7 +241,7 @@ bool sendHTTPRequest(String httpRequest, int hours) {
 
     // If we've got to here then the message has probably gone through, nothing
     // more we can do on our end.
-    eepromWriteCheckValue(255);
+    eepromWriteCheckValue(EEPROM_OK);
     Serial.println("Clearing check value from EEPROM.");
     
     return true;
@@ -297,7 +304,7 @@ void setup() {
   switchLEDS(LIGHT_OFF);
 
   delay(500);
-
+  EEPROM.begin(128);
   // Start the serial. start of message line break to clear away
   // from the garbage the ESP8266 dumps out the serial port at boot.
   Serial.begin(115200);
@@ -319,23 +326,29 @@ void setup() {
   Serial.print("\nConnected to '" + String(ssid) + "' with IP: ");  
   Serial.println(WiFi.localIP());
 
+  // Start UDP
+  udp.begin(localUDPPort);
+  
   // Look up the IP address of the NTP time server, then set up the
   // recurring time polling.
-  Serial.println("Syncing with NTP server (" + String(ntpServerName) + ", " + timeServerIP + ")");
   WiFi.hostByName(ntpServerName, timeServerIP); 
+  
+  Serial.println("Syncing with NTP server (" + String(ntpServerName) + ")");
   setSyncProvider(getNtpTime);
 
   // Wait for the time to be synced with NTP.
   while (timeStatus() == timeNotSet) {  
+    time_t set;
+    setTime(set);
     Serial.print("."); 
-    delay(250); 
+    delay(5000); 
   }
 
   Serial.println("Current time (UTC) from NTP: " + displayTime(hour(), minute()));
   Serial.println("Current local time (UK):     " + displayTime(hour(localTime), minute(localTime)));
 
   unsigned int checkValue = eepromReadCheckValue();
-  if (checkValue != 255) {
+  if (checkValue != EEPROM_OK) {
     // The device has rebooted before completing the submission.
     Serial.println("Uncompleted submission detected. Resending value '" + String(checkValue) + "'.");
     
@@ -357,9 +370,12 @@ bool moveKnob() {
     // The knob can be divided into 8 quite nicely - 128 - and we want to move to the middle of the
     // next segment so + 64.
     short targetPos = ((hour() - closingHour) * 128) + 64;
+
+      Serial.println("Current knob position: " + currentPos);
+      Serial.println("Target knob position:  " + targetPos);
     
     while (!abs(currentPos - targetPos) <= KNOB_VARIANCE) {
-      currentPos = analogRead(A0);
+     
       // Not there yet. Move that knob!
       char motorDirection = UP;
       if (currentPos > targetPos) {
@@ -406,10 +422,12 @@ void loop() {
 
     // Read the ADC value, divide into 8 and round to get the number of hours indicated.
     short knobValue = analogRead(A0);
-    short hours = floor(knobValue / 128);
+    Serial.println("Knob raw value:      " + String(knobValue));
+    int hours = floor(knobValue / 128);
+    Serial.println("Knob hours position: " + String(hours));
     
     // Seed the RNG. It's still rubbish, but perhaps this will make it a bit better.
-    randomSeed(hour() * second() + minute() / knobValue);
+    randomSeed(hour() * second() + minute() + knobValue);
         
     String httpRequest = createHTTPRequest(hours);
     sendHTTPRequest(httpRequest, hours);
@@ -419,6 +437,7 @@ void loop() {
 
   if (millis() - lastKnobCheck > 30000 && turnKnob == true) {
     moveKnob();
+    lastKnobCheck = millis();
   }
 
 }
