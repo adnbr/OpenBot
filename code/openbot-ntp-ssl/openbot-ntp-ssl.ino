@@ -37,6 +37,7 @@
 #define STOP               3
 #define KNOB_VARIANCE      6 // +/- ideal knob position.
 
+#define NTP_UPDATE_FREQ    43200 // 720 minutes - spreads out NTP load. Onboard oscillator is plenty accurate. 
 static WiFiClientSecure client;
 WiFiUDP udp;
 
@@ -44,7 +45,8 @@ WiFiUDP udp;
 const unsigned short localUDPPort = 2390;
 
 IPAddress timeServerIP;  
-const char* ntpServerName = "pool.ntp.org";
+const char* ntpServerName = "pool.ntp.org";     // Pool is preferred
+const char* ntpServerName2 = "time.nist.gov";   // Second choice - TODO.
 
 const int NTP_PACKET_SIZE = 48;
 byte packetBuffer[NTP_PACKET_SIZE]; 
@@ -257,8 +259,8 @@ String createHTTPRequest(int hours) {
     
     // Closed has been selected on the dial. Tweet a "random" closed message.
     randomNumber = random (1, numberClosedStrings);
-    message = closeSpace[randomNumber].leader + "(It's " + displayTime(hour(localTime), minute(localTime)) + ")";
-
+    message = closeSpace[randomNumber].leader + " (It's " + displayTime(hour(localTime), minute(localTime)) + ")";
+    
     turnKnob = false;
     
     return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message);
@@ -291,6 +293,9 @@ String createHTTPRequest(int hours) {
     
     return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message);
   }
+
+  
+  
 }
 
 void setup() {
@@ -335,13 +340,16 @@ void setup() {
   
   Serial.println("Syncing with NTP server (" + String(ntpServerName) + ")");
   setSyncProvider(getNtpTime);
-
+  setSyncInterval(NTP_UPDATE_FREQ);
+  
   // Wait for the time to be synced with NTP.
-  while (timeStatus() == timeNotSet) {  
-    time_t set;
+  if (timeStatus() == timeNotSet) {  
+    Serial.println("Could not get time from primary NTP. Attempting secondary NTP server.");
+    WiFi.hostByName(ntpServerName2, timeServerIP); 
+    time_t set = getNtpTime();
+    // If we don't get past this point, perhaps we should consider a "no time available" option
+    // TODO: What if this fails?
     setTime(set);
-    Serial.print("."); 
-    delay(5000); 
   }
 
   Serial.println("Current time (UTC) from NTP: " + displayTime(hour(), minute()));
@@ -364,31 +372,27 @@ void setup() {
 }
 
 bool moveKnob() {
-  if (minute() - closingMinute == 0) {
-    short currentPos = analogRead(A0);
+  int currentPos = analogRead(A0);
 
-    // The knob can be divided into 8 quite nicely - 128 - and we want to move to the middle of the
-    // next segment so + 64.
-    short targetPos = ((hour() - closingHour) * 128) + 64;
+  // The knob can be divided into 8 quite nicely - 128 - and we want to move to the middle of the
+  // next segment so + 64.
+  int targetPos = ((closingHour - hour()) * 128) + 64;
 
-      Serial.println("Current knob position: " + currentPos);
-      Serial.println("Target knob position:  " + targetPos);
-    
-    while (!abs(currentPos - targetPos) <= KNOB_VARIANCE) {
-     
-      // Not there yet. Move that knob!
-      char motorDirection = UP;
-      if (currentPos > targetPos) {
-        motorDirection = DOWN;
-      }
-      controlMotor(motorDirection);
-      delay(25);
-      controlMotor(STOP);
+  Serial.println("Current knob position: " + String(currentPos));
+  Serial.println("Target knob position:  " + String(targetPos));
+
+  // Disabled for the moment, until the H-bridge is connected.
+  /*while (!abs(currentPos - targetPos) <= KNOB_VARIANCE) {
+   
+    // Not there yet. Move that knob!
+    char motorDirection = UP;
+    if (currentPos > targetPos) {
+      motorDirection = DOWN;
     }
-    // if pot doesnt equal what we want, +/- a few
-    // move the pot.
-    // what we are pretty much aiming for is Hours Remaining * 128 + 64.
-  }
+    controlMotor(motorDirection);
+    delay(25);
+    controlMotor(STOP);
+  } */
 }
 
 void controlMotor(char direction) {
@@ -425,7 +429,7 @@ void loop() {
     Serial.println("Knob raw value:      " + String(knobValue));
     int hours = floor(knobValue / 128);
     Serial.println("Knob hours position: " + String(hours));
-    
+
     // Seed the RNG. It's still rubbish, but perhaps this will make it a bit better.
     randomSeed(hour() * second() + minute() + knobValue);
         
@@ -433,6 +437,8 @@ void loop() {
     sendHTTPRequest(httpRequest, hours);
 
     switchLEDS(LIGHT_GREEN);
+
+    moveKnob();
   }
 
   if (millis() - lastKnobCheck > 30000 && turnKnob == true) {
