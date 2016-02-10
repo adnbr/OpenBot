@@ -253,49 +253,62 @@ String createHTTPRequest(int hours) {
 
   String message;
   short randomNumber;
-  
-  // Generate the HTTP request to be sent to ThingSpeak.
-  if (hours == 0) {
-    
-    // Closed has been selected on the dial. Tweet a "random" closed message.
-    randomNumber = random (1, numberClosedStrings);
-    message = closeSpace[randomNumber].leader + " (It's " + displayTime(hour(localTime), minute(localTime)) + ")";
-    
-    turnKnob = false;
-    
-    return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message);
-    
-  } else {
-    
-    // Space will be open for a period of time, tweet a "random" open message.
-    randomNumber = random (1, numberOpenStrings);
 
-    // Increment the timer, if the new value is over 24 hours (midnight) then subtract 24 to make
-    // it into a valid time. If equal to 24 then still subtract 24 so midnight is represented as 00:00
-    closingHour = hour(localTime) + hours;
-    if (closingHour >= 24) {
-      closingHour -= 24;
-    }
-    
+    // Generate the HTTP request to be sent to ThingSpeak.
+    if (hours == 0) {
+      
+      // Closed has been selected on the dial. Tweet a "random" closed message.
+      randomNumber = random (1, numberClosedStrings);
+      
+      turnKnob = false;
+      
+      // Check if the time is correct.
+      if (timeStatus() == timeNotSet) {
+        // Add an appropriate failure hashtag.
+        message = closeSpace[randomNumber].leader + " #ntpfailure";
+        return buildRequest(hours, "#ntpfailure", message);
+      } else {
+        message = closeSpace[randomNumber].leader + " (It's " + displayTime(hour(localTime), minute(localTime)) + ")";
+      }
 
-    // Round the minutes down to the closest quarter-hour. No need for minute level precision.
-    closingMinute = minute(localTime) - (minute(localTime) % 15);
-
-    // If the hour is singular "1" then we need to use the singular text. Otherwise, add the 
-    // number and append "hours".
-    if (hours == 1) {
-      message = message = openSpace[randomNumber].leader + openSpace[randomNumber].singular + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
+      return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message);
+      
     } else {
-      message = message = openSpace[randomNumber].leader + hours + " hours" + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
+      
+      turnKnob = true;
+      
+      // Space will be open for a period of time, tweet a "random" open message.
+      randomNumber = random (1, numberOpenStrings);
+
+      // Check if the time is correct.
+      if (timeStatus() == timeNotSet) {
+        // Add an appropriate failure hashtag.
+        message = closeSpace[randomNumber].leader + " #ntpfailure";
+        return buildRequest(hours, "#ntpfailure", message);
+      }
+      
+      // Increment the timer, if the new value is over 24 hours (midnight) then subtract 24 to make
+      // it into a valid time. If equal to 24 then still subtract 24 so midnight is represented as 00:00
+      closingHour = hour(localTime) + hours;
+      if (closingHour >= 24) {
+        closingHour -= 24;
+      }
+      
+  
+      // Round the minutes down to the closest quarter-hour. No need for minute level precision.
+      closingMinute = minute(localTime) - (minute(localTime) % 15);
+  
+      // If the hour is singular "1" then we need to use the singular text. Otherwise, add the 
+      // number and append "hours".
+      if (hours == 1) {
+        message = message = openSpace[randomNumber].leader + openSpace[randomNumber].singular + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
+      } else {
+        message = message = openSpace[randomNumber].leader + hours + " hours" + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
+      }
+  
+      return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message);
     }
 
-    turnKnob = true;
-    
-    return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message);
-  }
-
-  
-  
 }
 
 void setup() {
@@ -348,7 +361,6 @@ void setup() {
     WiFi.hostByName(ntpServerName2, timeServerIP); 
     time_t set = getNtpTime();
     // If we don't get past this point, perhaps we should consider a "no time available" option
-    // TODO: What if this fails?
     setTime(set);
   }
 
