@@ -1,12 +1,22 @@
-/*  Leeds Hackspace OpenBot
+/*  
+ *  Leeds Hackspace OpenBot
  *  Tweets (@LHSOpenBot) when the space is open for non-keyholders.
- *  For more information ask Aidan, or check the wiki. Flash onto an ESP-12E.
+ *  For more information ask Aidan, or check the wiki. Flash onto an ESP-12E/NodeMCU dev board.
  *  
  *  Set up Wifi/API credentials in keys.h.
  *  Alter tweeted text in strings.h.
  *  
+ *  Thingspeak channel fields:
+ *  
+ *  +-------+-------+---------+-----------+
+ *  | #1    | #2    | #3      | #4        |
+ *  +-------+-------+---------+-----------+
+ *  | hours | until | message | localutc  |
+ *  +-------+-------+---------+-----------+
+ *  
  *  http://www.leedshackspace.org.uk
  *  CC-BY-SA 2016
+ *  
  */
 
 #include <ESP8266WiFi.h>
@@ -45,8 +55,8 @@ WiFiUDP udp;
 const unsigned short localUDPPort = 2390;
 
 IPAddress timeServerIP;  
-const char* ntpServerName = "pool.ntp.org";     // Pool is preferred
-const char* ntpServerName2 = "time.nist.gov";   // Second choice - TODO.
+const char* ntpServerName = "uk.pool.ntp.org";     // Pool is preferred
+const char* ntpServerName2 = "time.nist.gov";   // Second choice
 
 const int NTP_PACKET_SIZE = 48;
 byte packetBuffer[NTP_PACKET_SIZE]; 
@@ -67,7 +77,7 @@ time_t getNtpTime()
 {
   while (udp.parsePacket() > 0) ; // discard any previously received packets
   
-  Serial.println("Transmit NTP Request");
+  Serial.println("Sending NTP Request");
   sendNTPpacket(timeServerIP);
   
   uint32_t beginWait = millis();
@@ -96,7 +106,7 @@ time_t getNtpTime()
     }
   }
 
-  Serial.println("No response from NTP server (" + String(ntpServerName) + ")");
+  Serial.println("No response from NTP server (" + String(timeServerIP) + ")");
   return 0;
 }
 
@@ -171,14 +181,18 @@ void switchLEDS(char lightMode) {
 }
 
 
-String buildRequest(int hours, String closingTime, String tweet) {
+String buildRequest(int hours, String closingTime, String message, bool tweet = false) {
   // Construct the actual data to be transmitted - includes the dial number, 
   // expected closing time and the message itself.
   String data = String("field1=") + hours + 
                        "&field2=" + closingTime + 
-                       "&field3=" + tweet +
-                       "&twitter=" + api_twitter_feed + 
-                       "&tweet=" + tweet;
+                       "&field3=" + message +
+                       "&field4=" + now(); //Second since Jan 1st 1970
+
+  // If tweet string is not empty.
+  if (tweet) {
+    data = data + "&twitter=" + api_twitter_feed + "&tweet=" + message;
+  }
 
   // Construct the HTTP header to be send, and append the data.
   return String("POST ") + api_uri + " HTTP/1.1\r\n" +
@@ -263,15 +277,15 @@ String createHTTPRequest(int hours) {
       turnKnob = false;
       
       // Check if the time is correct.
-      if (timeStatus() == timeNotSet) {
+      if (timeStatus() != timeSet) {
         // Add an appropriate failure hashtag.
         message = closeSpace[randomNumber].leader + " #ntpfailure";
-        return buildRequest(hours, "#ntpfailure", message);
+        return buildRequest(hours, "#ntpfailure", message, true);
       } else {
         message = closeSpace[randomNumber].leader + " (It's " + displayTime(hour(localTime), minute(localTime)) + ")";
       }
 
-      return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message);
+      return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message, true);
       
     } else {
       
@@ -281,10 +295,10 @@ String createHTTPRequest(int hours) {
       randomNumber = random (1, numberOpenStrings);
 
       // Check if the time is correct.
-      if (timeStatus() == timeNotSet) {
+      if (timeStatus() != timeSet) {
         // Add an appropriate failure hashtag.
-        message = closeSpace[randomNumber].leader + " #ntpfailure";
-        return buildRequest(hours, "#ntpfailure", message);
+        message = openSpace[randomNumber].leader + hours + " hours" + openSpace[randomNumber].punctuation + " #ntpfailure";
+        return buildRequest(hours, "#ntpfailure", message, true);
       }
       
       // Increment the timer, if the new value is over 24 hours (midnight) then subtract 24 to make
@@ -306,7 +320,7 @@ String createHTTPRequest(int hours) {
         message = message = openSpace[randomNumber].leader + hours + " hours" + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
       }
   
-      return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message);
+      return buildRequest(hours, displayTime(closingHour, closingMinute), message, true);
     }
 
 }
@@ -352,20 +366,32 @@ void setup() {
   WiFi.hostByName(ntpServerName, timeServerIP); 
   
   Serial.println("Syncing with NTP server (" + String(ntpServerName) + ")");
+  
   setSyncProvider(getNtpTime);
   setSyncInterval(NTP_UPDATE_FREQ);
   
   // Wait for the time to be synced with NTP.
   if (timeStatus() == timeNotSet) {  
     Serial.println("Could not get time from primary NTP. Attempting secondary NTP server.");
+    String httpRequest = buildRequest(0, "ERR:NTP1", "Failed to retrieve time from primary NTP on boot - " + String(timeServerIP), false);
+    sendHTTPRequest(httpRequest, 0);
     WiFi.hostByName(ntpServerName2, timeServerIP); 
     time_t set = getNtpTime();
-    // If we don't get past this point, perhaps we should consider a "no time available" option
-    setTime(set);
+    if (set != 0) {
+      // Second time sync was successful, set the onboard time.
+      setTime(set);
+    } else {
+      // Thingspeak wants a 15 second delay or it throttles writes and discards data.
+      delay(15500); 
+      httpRequest = buildRequest(0, "ERR:NTP2", "Failed to retrieve time from secondary NTP on boot - " + String(timeServerIP), false);
+      sendHTTPRequest(httpRequest, 0);
+    }
   }
 
-  Serial.println("Current time (UTC) from NTP: " + displayTime(hour(), minute()));
-  Serial.println("Current local time (UK):     " + displayTime(hour(localTime), minute(localTime)));
+  if (timeStatus() != timeNotSet) {
+    Serial.println("Current time (UTC) from NTP: " + displayTime(hour(), minute()));
+    Serial.println("Current local time (UK):     " + displayTime(hour(localTime), minute(localTime)));
+  }
 
   unsigned int checkValue = eepromReadCheckValue();
   if (checkValue != EEPROM_OK) {
