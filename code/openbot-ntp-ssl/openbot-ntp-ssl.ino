@@ -47,7 +47,7 @@
 #define STOP               3
 #define KNOB_VARIANCE      6 // +/- ideal knob position.
 
-#define NTP_UPDATE_FREQ    43200 // 720 minutes - spreads out NTP load. Onboard oscillator is plenty accurate. 
+#define NTP_UPDATE_FREQ    21700 // 360 minutes - spreads out NTP load. Onboard oscillator is plenty accurate. 
 static WiFiClientSecure client;
 WiFiUDP udp;
 
@@ -65,16 +65,16 @@ byte packetBuffer[NTP_PACKET_SIZE];
 TimeChangeRule BST = {"BST", Last, Sun, Mar, 1, 60};        // British Summer Time
 TimeChangeRule GMT = {"GMT", Last, Sun, Oct, 2, 0};         // Greenwich Mean Time
 // Set the timezone to allow for automatic DST updates.
-  Timezone UK(BST, GMT);
+Timezone UK(BST, GMT);
 
 time_t localTime;
-short closingHour, closingMinute;
+int closingHour, closingMinute;
 
 bool turnKnob;
 unsigned long lastKnobCheck;
 
-time_t getNtpTime()
-{
+time_t getNtpTime() {
+  
   while (udp.parsePacket() > 0) ; // discard any previously received packets
   
   Serial.println("Sending NTP Request");
@@ -108,11 +108,12 @@ time_t getNtpTime()
 
   Serial.println("No response from NTP server (" + String(timeServerIP) + ")");
   return 0;
+  
 }
 
 // send an NTP request to the time server at the given address
-void sendNTPpacket(IPAddress &address)
-{
+void sendNTPpacket(IPAddress &address) {
+  
   // Set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
   
@@ -134,20 +135,26 @@ void sendNTPpacket(IPAddress &address)
   udp.beginPacket(address, 123); //NTP requests are to port 123
   udp.write(packetBuffer, NTP_PACKET_SIZE);
   udp.endPacket();
+  
 }
 
 void eepromWriteCheckValue(int value) {
+  
   byte lowByte = ((value >> 0) & 0xFF);
   EEPROM.write(EEPROM_ADDRESS, lowByte);
   EEPROM.commit();
+  
 }
 
 unsigned int eepromReadCheckValue() {
+  
   byte lowByte = EEPROM.read(EEPROM_ADDRESS);
   return lowByte;
+  
 }
 
-String displayTime(short hour, short minute){
+String displayTime(short hour, short minute) {
+  
   String output;
   if (hour < 10) {
     output = "0";
@@ -158,9 +165,11 @@ String displayTime(short hour, short minute){
   }
   output = output + minute;
   return output;
+  
 }
 
 void switchLEDS(char lightMode) {
+  
   char red, green;
   switch (lightMode) {
     case LIGHT_OFF:
@@ -178,16 +187,18 @@ void switchLEDS(char lightMode) {
   }
   digitalWrite(PIN_LED_RED, red);
   digitalWrite(PIN_LED_GREEN, green);
+  
 }
 
 
 String buildRequest(int hours, String closingTime, String message, bool tweet = false) {
+  
   // Construct the actual data to be transmitted - includes the dial number, 
   // expected closing time and the message itself.
   String data = String("field1=") + hours + 
                        "&field2=" + closingTime + 
                        "&field3=" + message +
-                       "&field4=" + now(); //Second since Jan 1st 1970
+                       "&field4=" + localTime; //Second since Jan 1st 1970
 
   // If tweet string is not empty.
   if (tweet) {
@@ -200,6 +211,7 @@ String buildRequest(int hours, String closingTime, String message, bool tweet = 
                "THINGSPEAKAPIKEY: " + api_key + "\r\n" +
                "Content-Type: application/x-www-form-urlencoded\r\n" +
                "Content-Length:"  + data.length() + "\n\n" + data;
+               
 }
 
 bool sendHTTPRequest(String httpRequest, int hours) {
@@ -261,12 +273,16 @@ bool sendHTTPRequest(String httpRequest, int hours) {
     Serial.println("Clearing check value from EEPROM.");
     
     return true;
+    
 }
 
 String createHTTPRequest(int hours) {
 
   String message;
   short randomNumber;
+
+  updateLocalTime();
+  
 
     // Generate the HTTP request to be sent to ThingSpeak.
     if (hours == 0) {
@@ -315,9 +331,9 @@ String createHTTPRequest(int hours) {
       // If the hour is singular "1" then we need to use the singular text. Otherwise, add the 
       // number and append "hours".
       if (hours == 1) {
-        message = message = openSpace[randomNumber].leader + openSpace[randomNumber].singular + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
+        message = openSpace[randomNumber].leader + openSpace[randomNumber].singular + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
       } else {
-        message = message = openSpace[randomNumber].leader + hours + " hours" + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
+        message = openSpace[randomNumber].leader + hours + " hours" + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
       }
   
       return buildRequest(hours, displayTime(closingHour, closingMinute), message, true);
@@ -326,6 +342,7 @@ String createHTTPRequest(int hours) {
 }
 
 void setup() {
+
   // Setup the pin directions
   pinMode(PIN_LED_RED, OUTPUT);
   pinMode(PIN_LED_GREEN, OUTPUT);
@@ -410,6 +427,7 @@ void setup() {
 }
 
 bool moveKnob() {
+  
   int currentPos = analogRead(A0);
 
   // The knob can be divided into 8 quite nicely - 128 - and we want to move to the middle of the
@@ -431,9 +449,11 @@ bool moveKnob() {
     delay(25);
     controlMotor(STOP);
   } */
+  
 }
 
 void controlMotor(char direction) {
+  
   char up, down;
   switch (direction) {
     case UP:
@@ -451,8 +471,17 @@ void controlMotor(char direction) {
   }
   digitalWrite(PIN_MOTOR_UP, up);
   digitalWrite(PIN_MOTOR_DOWN, down);
+  
 }
 
+
+void updateLocalTime() {
+  
+  Serial.println("Refreshing local time.");
+  localTime = UK.toLocal(now());
+  Serial.println("Local time is: " + displayTime(hour(localTime), minute(localTime)));
+  
+}
 
 void loop() {
 
@@ -479,8 +508,12 @@ void loop() {
     moveKnob();
   }
 
-  if (millis() - lastKnobCheck > 30000 && turnKnob == true) {
-    moveKnob();
+  if (millis() - lastKnobCheck > 60000) {
+    // Update the local time
+    updateLocalTime();
+    if (turnKnob) {
+      moveKnob();
+    }
     lastKnobCheck = millis();
   }
 
