@@ -62,10 +62,10 @@ const int NTP_PACKET_SIZE = 48;
 byte packetBuffer[NTP_PACKET_SIZE]; 
 
 //United Kingdom (London, Belfast, Edinburgh)
-TimeChangeRule BST = {"BST", Last, Sun, Mar, 1, 60};        // British Summer Time
-TimeChangeRule GMT = {"GMT", Last, Sun, Oct, 2, 0};         // Greenwich Mean Time
+TimeChangeRule SummerTime = {"BST", Last, Sun, Mar, 1, 60};          // British Summer Time
+TimeChangeRule StandardTime = {"GMT", Last, Sun, Oct, 2, 0};         // Greenwich Mean Time
 // Set the timezone to allow for automatic DST updates.
-Timezone UK(BST, GMT);
+Timezone TZ(SummerTime, StandardTime);
 
 time_t localTime;
 int closingHour, closingMinute;
@@ -100,7 +100,7 @@ time_t getNtpTime() {
 
       // Calculate epoch and calculate the local time from this. 
       time_t utc = secsSince1900 - 2208988800UL;
-      localTime = UK.toLocal(utc);
+      localTime = TZ.toLocal(utc);
           
       return utc;
     }
@@ -478,7 +478,7 @@ void controlMotor(char direction) {
 void updateLocalTime() {
   
   Serial.println("Refreshing local time.");
-  localTime = UK.toLocal(now());
+  localTime = TZ.toLocal(now());
   Serial.println("Local time is: " + displayTime(hour(localTime), minute(localTime)));
   
 }
