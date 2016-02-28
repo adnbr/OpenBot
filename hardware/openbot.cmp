@@ -1,0 +1,185 @@
+Cmp-Mod V01 Created by CvPcb (2013-07-07 BZR 4022)-stable date = 27/02/2016 17:21:22
+
+BeginCmp
+TimeStamp = /56B20536;
+Reference = C1;
+ValeurCmp = 100NF;
+IdModule  = CAPACITOR-NP-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBAB48;
+Reference = C2;
+ValeurCmp = 100UF;
+IdModule  = CAP_POL_KEMET_C;
+EndCmp
+
+BeginCmp
+TimeStamp = /56B21671;
+Reference = C3;
+ValeurCmp = 470UF;
+IdModule  = CAPACITOR-POL-D_8MMxP_3.5MM;
+EndCmp
+
+BeginCmp
+TimeStamp = /56B21CD9;
+Reference = C4;
+ValeurCmp = 100NF;
+IdModule  = CAPACITOR-NP-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56B24872;
+Reference = D1;
+ValeurCmp = S1A-127;
+IdModule  = DIODE-SMA;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBA5DA;
+Reference = DS1;
+ValeurCmp = GRN;
+IdModule  = LED-5MM;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBA5E0;
+Reference = DS2;
+ValeurCmp = RED;
+IdModule  = LED-5MM;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBA5C3;
+Reference = DS3;
+ValeurCmp = GRN;
+IdModule  = LED-5MM;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBA5E6;
+Reference = DS4;
+ValeurCmp = RED;
+IdModule  = LED-5MM;
+EndCmp
+
+BeginCmp
+TimeStamp = /56B24863;
+Reference = P1;
+ValeurCmp = POWER-IN;
+IdModule  = CONN-02;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBAC73;
+Reference = P2;
+ValeurCmp = JST TO BUTTON;
+IdModule  = CONN-02;
+EndCmp
+
+BeginCmp
+TimeStamp = /56B2427E;
+Reference = P3;
+ValeurCmp = JMP-POT-SELECT;
+IdModule  = SJ-03;
+EndCmp
+
+BeginCmp
+TimeStamp = /56D1C288;
+Reference = P4;
+ValeurCmp = CONNECTOR-06;
+IdModule  = CONN-06-2x3;
+EndCmp
+
+BeginCmp
+TimeStamp = /56C06B63;
+Reference = Q1;
+ValeurCmp = BC847BS;
+IdModule  = SOT363;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBB6A2;
+Reference = R1;
+ValeurCmp = 220R;
+IdModule  = RESISTOR-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBB4E0;
+Reference = R2;
+ValeurCmp = 220R;
+IdModule  = RESISTOR-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBB687;
+Reference = R3;
+ValeurCmp = 220R;
+IdModule  = RESISTOR-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBB296;
+Reference = R4;
+ValeurCmp = 220R;
+IdModule  = RESISTOR-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBB673;
+Reference = R5;
+ValeurCmp = 220R;
+IdModule  = RESISTOR-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBB102;
+Reference = R6;
+ValeurCmp = 220R;
+IdModule  = RESISTOR-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56B66550;
+Reference = R7;
+ValeurCmp = 10K;
+IdModule  = RESISTOR-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56B66556;
+Reference = R8;
+ValeurCmp = 10K;
+IdModule  = RESISTOR-0603-REFLOW;
+EndCmp
+
+BeginCmp
+TimeStamp = /56D1B4BF;
+Reference = R9;
+ValeurCmp = ALPS-RK16812MG;
+IdModule  = ALPS-RK16812MG-10kBx2;
+EndCmp
+
+BeginCmp
+TimeStamp = /56B2017A;
+Reference = U1;
+ValeurCmp = LD1117-5V;
+IdModule  = TO-252;
+EndCmp
+
+BeginCmp
+TimeStamp = /56BBBA62;
+Reference = U2;
+ValeurCmp = NODEMCU-ESP12;
+IdModule  = NODEMCU-DEVKIT;
+EndCmp
+
+BeginCmp
+TimeStamp = /56B21BE6;
+Reference = U3;
+ValeurCmp = BD6211F;
+IdModule  = SOP-8;
+EndCmp
+
+EndListe
