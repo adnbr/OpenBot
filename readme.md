@@ -42,3 +42,7 @@ Panel Designer (FPD). The design is also available in SVG and DXF
 formats (exported from FPD) both with and without reference points in 
 the hope that they might be useful. They are handy in that the text 
 output is in the form of a single, clean path.
+
+## What does it look like?
+
+![The Current OpenBot](https://adnbr.co.uk/images/openbot/openbot-teenager.jpg)
