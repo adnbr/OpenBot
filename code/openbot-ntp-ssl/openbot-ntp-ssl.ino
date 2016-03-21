@@ -33,8 +33,8 @@
 #define PIN_LED_RED        D3
 #define PIN_LED_GREEN      D4
 #define PIN_BUTTON         D5
-#define PIN_MOTOR_FWD       D2
-#define PIN_MOTOR_REV     D1
+#define PIN_MOTOR_FWD      D1
+#define PIN_MOTOR_REV      D2
 
 #define LIGHT_RED          1
 #define LIGHT_GREEN        2
@@ -47,6 +47,8 @@
 #define DOWN               2
 #define STOP               3
 #define KNOB_VARIANCE      6 // +/- ideal knob position.
+
+#define CALC_KNOB_VALUE   ((closingHour - hour()) * 128) + 72
 
 #define NTP_UPDATE_FREQ    21700 // 360 minutes - spreads out NTP load. Onboard oscillator is plenty accurate.
 static WiFiClientSecure client;
@@ -101,13 +103,9 @@ time_t getNtpTime() {
 
       // Calculate epoch and calculate the local time from this.
       time_t utc = secsSince1900 - 2208988800UL;
-<<<<<<< HEAD
-      localTime = UK.toLocal(utc);
 
-=======
       localTime = TZ.toLocal(utc);
-          
->>>>>>> refs/remotes/origin/master
+
       return utc;
     }
   }
@@ -353,6 +351,9 @@ void setup() {
   pinMode(PIN_LED_RED, OUTPUT);
   pinMode(PIN_LED_GREEN, OUTPUT);
   pinMode(PIN_BUTTON, INPUT);
+  pinMode(PIN_MOTOR_FWD, OUTPUT);
+  pinMode(PIN_MOTOR_REV, OUTPUT);
+
 
   // Turn off all LEDs to give an indication of reboot, then
   // wait for a bit. Useful for debugging!
@@ -364,14 +365,15 @@ void setup() {
   // from the garbage the ESP8266 dumps out the serial port at boot.
   Serial.begin(115200);
   Serial.println("\n\nStarting OpenBot...");
-
+  closingHour = 4;
+  turnKnob = false;
   // We are starting to do work now, red LED on.
   switchLEDS(LIGHT_RED);
 
   // Connect to the wifi in station mode.
   Serial.println("Connecting to '" + String(ssid) + "'");
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, pass);
+  WiFi.begin();
 
   // Wait for a connection to be made, then print out the IP address.
   while (WiFi.status() != WL_CONNECTED) {
@@ -432,29 +434,28 @@ void setup() {
 
 }
 
-bool moveKnob() {
+bool moveKnob(int targetPos) {
 
   int currentPos = analogRead(A0);
-
-  // The knob can be divided into 8 quite nicely - 128 - and we want to move to the middle of the
-  // next segment so + 64.
-  int targetPos = ((closingHour - hour()) * 128) + 64;
-
-  Serial.println("Current knob position: " + String(currentPos));
-  Serial.println("Target knob position:  " + String(targetPos));
-
-  // Disabled for the moment, until the H-bridge is connected.
-  /*while (!abs(currentPos - targetPos) <= KNOB_VARIANCE) {
-
-    // Not there yet. Move that knob!
-    char motorDirection = UP;
+  char motorDirection;
+  while (!(abs(currentPos - targetPos) <= KNOB_VARIANCE)) {
+      Serial.println("\n\nCurrent knob position: " + String(currentPos));
+      Serial.println("Target knob position:  " + String(targetPos));
+      // Not there yet. Move that knob!
+      
     if (currentPos > targetPos) {
       motorDirection = DOWN;
+      Serial.println("Down");
+    } else {
+      motorDirection = UP;
+      Serial.println("Up");
     }
     controlMotor(motorDirection);
     delay(25);
     controlMotor(STOP);
-  } */
+    Serial.println("Stop");
+    currentPos = analogRead(A0);
+  } 
 
 }
 
@@ -511,14 +512,18 @@ void loop() {
 
     switchLEDS(LIGHT_GREEN);
 
-    moveKnob();
+    moveKnob(CALC_KNOB_VALUE);
   }
 
-  if (millis() - lastKnobCheck > 60000) {
+  if (millis() - lastKnobCheck > 30000) {
     // Update the local time
     updateLocalTime();
-    if (turnKnob) {
-      moveKnob();
+    if (turnKnob && closingMinute - minute() == 0) {
+      int moveTo = CALC_KNOB_VALUE;
+      moveKnob(moveTo);
+      if (closingHour - hour() == 0) {
+        turnKnob = false;
+      }
     }
     lastKnobCheck = millis();
   }
