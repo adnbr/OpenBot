@@ -18,147 +18,115 @@
  *  CC-BY-SA 2016
  *
  */
-#include <Arduino.h>
 
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
-#include <WiFiudp.h>
 #include <TimeLib.h>
-#include <Timezone.h>    //https://github.com/JChristensen/Timezone
+#include <Timezone.h>
 #include <EEPROM.h>
 
 #include "keys.h"
 #include "strings.h"
+#include "LocalNTP.h"
+#include "motor.h"
 
 #define PIN_LED_RED        D3
 #define PIN_LED_GREEN      D4
 #define PIN_BUTTON         D5
 #define PIN_MOTOR_FWD      D1
 #define PIN_MOTOR_REV      D2
-
-#define LIGHT_RED          1
-#define LIGHT_GREEN        2
-#define LIGHT_OFF          0
+#define KNOB_VARIANCE      3 // +/- ideal knob position.
 
 #define EEPROM_ADDRESS     0
-#define EEPROM_OK          100
+#define EEPROM_OK          255
 
-#define UP                 1
-#define DOWN               2
-#define STOP               3
-#define KNOB_VARIANCE      6 // +/- ideal knob position.
+//const char* ntpServerName = "time.nist.gov";
+const char* ntpServerName = "uk.pool.ntp.org";
+#define NTP_UPDATE_FREQ    21700
 
-#define CALC_KNOB_VALUE   ((closingHour - hour()) * 128) + 72
-
-#define NTP_UPDATE_FREQ    21700 // 360 minutes - spreads out NTP load. Onboard oscillator is plenty accurate.
-static WiFiClientSecure client;
-WiFiUDP udp;
-
-// Port to listen on for UDP packets
-const unsigned short localUDPPort = 2390;
-
-IPAddress timeServerIP;
-const char* ntpServerName = "uk.pool.ntp.org";     // Pool is preferred
-const char* ntpServerName2 = "time.nist.gov";   // Second choice
-
-const int NTP_PACKET_SIZE = 48;
-byte packetBuffer[NTP_PACKET_SIZE];
-
-//United Kingdom (London, Belfast, Edinburgh)
+// United Kingdom (London, Belfast, Edinburgh)
 TimeChangeRule SummerTime = {"BST", Last, Sun, Mar, 1, 60};          // British Summer Time
 TimeChangeRule StandardTime = {"GMT", Last, Sun, Oct, 2, 0};         // Greenwich Mean Time
+
 // Set the timezone to allow for automatic DST updates.
 Timezone TZ(SummerTime, StandardTime);
 
-time_t localTime;
-int closingHour, closingMinute;
+time_t closingTime;
+unsigned long lastChecked;
+static WiFiClientSecure client;
 
-bool turnKnob;
-unsigned long lastKnobCheck;
+bool spaceStateOpen = false;
 
-time_t getNtpTime() {
+LocalNTP ntp;
+motor knob(PIN_MOTOR_FWD, PIN_MOTOR_REV);
 
-  while (udp.parsePacket() > 0) ; // discard any previously received packets
+void connectWifi() 
+{
+  // Turn on the WiFi and connect using the credentials in the keys file.
+  Serial.println("Connecting to '" + String(ssid) + "'");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, pass);
 
-  Serial.println("Sending NTP Request");
-  sendNTPpacket(timeServerIP);
+  // Wait for a connection to be made, then print out the IP address.
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(200);
+    Serial.print(".");
+  }
+  Serial.print("\nConnected to '" + String(ssid) + "' with IP: ");
+  Serial.println(WiFi.localIP());
+}
 
-  uint32_t beginWait = millis();
+void disconnectWifi() 
+{
+  Serial.println("Disconnecting from Wifi");
+  WiFi.disconnect();
+}
 
-  while (millis() - beginWait < 2000) {
-    int size = udp.parsePacket();
-    if (size >= NTP_PACKET_SIZE) {
 
-      Serial.println("Received NTP Response");
+time_t ntpUpdate()
+{
+  time_t updateTime = ntp.getNtpTime();
+  if (updateTime != 0) {
+    setTime(TZ.toLocal(updateTime));
+    Serial.println("Current local time is: " + displayTime(hour(), minute()));
+    return (updateTime);
+  } else {
+    return 0;
+  }
+}
 
-      // Read packet into buffer
-      udp.read(packetBuffer, NTP_PACKET_SIZE);
-      unsigned long secsSince1900;
+String generateHttpRequest(int hours, time_t closing, String message, bool tweet = false) 
+{
+  // Write the closingTime out to a string, and submit it to ThingSpeak. If NTP failed, send a message
+  // to the 
+  String closingTimeString = "#ntpfailure";
+  if (closingTime != 0) {
+    closingTimeString = displayTime(hour(closing), minute(closing));
+  } 
+  
+  // Construct the actual data to be transmitted - includes the dial number,
+  // expected closing time and the message itself.
+  String data = String("field1=") + hours +
+                       "&field2=" + closingTimeString +
+                       "&field3=" + message +
+                       "&field4=" + now(); //Second since Jan 1st 1970
 
-      // Convert four bytes starting at location 40 to a long integer
-      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
-      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
-      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
-      secsSince1900 |= (unsigned long)packetBuffer[43];
-
-      // Calculate epoch and calculate the local time from this.
-      time_t utc = secsSince1900 - 2208988800UL;
-
-      localTime = TZ.toLocal(utc);
-
-      return utc;
-    }
+  // If tweet string is not empty.
+  if (tweet) {
+    data = data + "&twitter=" + api_twitter_feed + "&tweet=" + message;
   }
 
-  Serial.println("No response from NTP server (" + String(timeServerIP) + ")");
-  return 0;
+  // Construct the HTTP header to be sent, and append the data.
+  return String("POST ") + api_uri + " HTTP/1.1\r\n" +
+               "Host: " + api_host + "\r\n" +
+               "THINGSPEAKAPIKEY: " + api_key + "\r\n" +
+               "Content-Type: application/x-www-form-urlencoded\r\n" +
+               "Content-Length:"  + data.length() + "\n\n" + data;
 
 }
 
-// send an NTP request to the time server at the given address
-void sendNTPpacket(IPAddress &address) {
-
-  // Set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;            // Stratum, or type of clock
-  packetBuffer[2] = 6;            // Polling Interval
-  packetBuffer[3] = 0xEC;         // Peer Clock Precision
-
-  // 8 bytes of zero for Root Delay & Root Dispersion.
-  packetBuffer[12]  = 49;
-  packetBuffer[13]  = 0x4E;
-  packetBuffer[14]  = 49;
-  packetBuffer[15]  = 52;
-
-  // All NTP fields have been given values, now
-  // send a packet requesting a timestamp.
-  udp.beginPacket(address, 123); //NTP requests are to port 123
-  udp.write(packetBuffer, NTP_PACKET_SIZE);
-  udp.endPacket();
-
-}
-
-void eepromWriteCheckValue(int value) {
-
-  byte lowByte = ((value >> 0) & 0xFF);
-  EEPROM.write(EEPROM_ADDRESS, lowByte);
-  EEPROM.commit();
-
-}
-
-unsigned int eepromReadCheckValue() {
-
-  byte lowByte = EEPROM.read(EEPROM_ADDRESS);
-  return lowByte;
-
-}
-
-String displayTime(short hour, short minute) {
-
+String displayTime(short hour, short minute) 
+{
   String output;
   if (hour < 10) {
     output = "0";
@@ -169,61 +137,103 @@ String displayTime(short hour, short minute) {
   }
   output = output + minute;
   return output;
-
 }
 
-void switchLEDS(char lightMode) {
+long generateClosingTime (int hours) 
+{
+  long closing = now();
+  
+  int adjustHours = (hours - 1) * 3600;
+  int adjustMinutes = 3600 - (60 * (minute() - (minute() - (minute() % 15))));
+  closing += adjustHours + adjustMinutes;
 
-  char red, green;
-  switch (lightMode) {
-    case LIGHT_OFF:
-      red = LOW;
-      green = LOW;
-      break;
-    case LIGHT_RED:
-      red = HIGH;
-      green = LOW;
-      break;
-    case LIGHT_GREEN:
-      red = LOW;
-      green = HIGH;
-      break;
+  return closing;
+  
+}
+
+float generateKnobAnalogValue (time_t closing) 
+{
+  float floatAnalogValue = 0.0f;
+  int analogValue = 0;
+  if (closing != 0) {
+    floatAnalogValue = (closing - now()) / 3600.0f;
+    Serial.println (String(closing) + " - " + now() + " = " + (closing - now()));
+    Serial.println(floatAnalogValue);
+    analogValue = round(floatAnalogValue);
+    Serial.println(analogValue);
+    analogValue = analogValue * 128 + 72;
+  } else {
+    analogValue = 72;
   }
-  digitalWrite(PIN_LED_RED, red);
-  digitalWrite(PIN_LED_GREEN, green);
-
+  return analogValue;
 }
 
+String generateMessage (int hours, time_t closing) {
+  String message;
+  int randomNumber;
+  if (hours == 0) {
+    // 0/closed has been selected on the dial. Tweet a "random" closed message.
+    randomNumber = random (1, numberClosedStrings);
+    message = messageCloseSpace[randomNumber].leader;
 
-String buildRequest(int hours, String closingTime, String message, bool tweet = false) {
+    // Check for closingTime having a value - an empty closing time indicates that
+    // the time couldnot be retrieved. Append the current time if it's OK.
+    if (closing != 0) {
+      message = message  + " (It's " + displayTime(hour(), minute()) + ")";
+    } else {
+      message = message + " #ntpfailure";
+    }
+    
+    return message;
+        
+  } else {
+    
+    // Space is open. Tweet a "random" open message.
+    randomNumber = random (1, numberOpenStrings);
+    // If the hour is singular "1" then we need to use the singular text. Otherwise, add the
+    // number and append "hours".
+    if (hours == 1) {
+      message = messageOpenSpace[randomNumber].leader + messageOpenSpace[randomNumber].singular + messageOpenSpace[randomNumber].punctuation;
+    } else {
+      message = messageOpenSpace[randomNumber].leader + hours + " hours" + messageOpenSpace[randomNumber].punctuation;
+    }
 
-  // Construct the actual data to be transmitted - includes the dial number,
-  // expected closing time and the message itself.
-  String data = String("field1=") + hours +
-                       "&field2=" + closingTime +
-                       "&field3=" + message +
-                       "&field4=" + localTime; //Second since Jan 1st 1970
-
-  // If tweet string is not empty.
-  if (tweet) {
-    data = data + "&twitter=" + api_twitter_feed + "&tweet=" + message;
-  }
-
-  // Construct the HTTP header to be send, and append the data.
-  return String("POST ") + api_uri + " HTTP/1.1\r\n" +
-               "Host: " + api_host + "\r\n" +
-               "THINGSPEAKAPIKEY: " + api_key + "\r\n" +
-               "Content-Type: application/x-www-form-urlencoded\r\n" +
-               "Content-Length:"  + data.length() + "\n\n" + data;
-
+    // Check for empty closing time again, append the time if it's OK, ntpfailure if it's not.
+    if (closing != 0) {
+      message = message + " (Until ~" + displayTime(hour(closing), minute(closing)) + ")";
+    } else {
+      message = message + " #ntpfailure";
+    }
+    
+    return message;
+    
+    
+  } // End if hours = 0
+  
 }
 
-bool sendHTTPRequest(String httpRequest, int hours) {
+bool moveKnob(int targetPos) {
 
-    // Write the hours value to the eeprom to allow for recovery should the SSL handshake
-    // crash the device (sometimes this happens thanks to low/fragmented memory.)
-    eepromWriteCheckValue(hours);
-    Serial.println("Writing check value to EEPROM");
+  int currentPos = analogRead(A0);
+  char motorDirection;
+
+  while (!(abs(currentPos - targetPos) <= KNOB_VARIANCE)) {
+    // Not there yet. Move that knob!
+    if (currentPos > targetPos) {
+      knob.moveMotor(COUNTERCLOCKWISE);
+      Serial.println("CCW - " + String(currentPos) + "/" + String(targetPos));
+    } else {
+      knob.moveMotor(CLOCKWISE);
+      Serial.println(" CW - " + String(currentPos) + "/" + String(targetPos));
+    }
+    currentPos = analogRead(A0);
+  } 
+  knob.moveMotor(STOP);
+  
+}
+
+bool sendHttpRequest(String httpRequest, int hours) {
+
 
     // Try and connect to the API host. Restart at 5x failures.
     int failCount = 0;
@@ -233,7 +243,6 @@ bool sendHTTPRequest(String httpRequest, int hours) {
       Serial.println("Connection to '"+ String(api_host) + ":" + String(api_port) + "' failed on attempt " + String(failCount) + ". Waiting 1 second to retry.");
       delay(1000);
       if (failCount > 5) {
-        ESP.restart();
         return false;
       }
     }
@@ -271,261 +280,194 @@ bool sendHTTPRequest(String httpRequest, int hours) {
     Serial.println("Closing connection with '" + String(api_host) + "'");
     client.stop();
 
-    // If we've got to here then the message has probably gone through, nothing
-    // more we can do on our end.
-    eepromWriteCheckValue(EEPROM_OK);
-    Serial.println("Clearing check value from EEPROM.");
+
 
     return true;
 
 }
 
-String createHTTPRequest(int hours) {
+bool transmitMessage(int hours) {
 
-  String message;
-  short randomNumber;
+ // Write the hours value to the eeprom to allow for recovery should the SSL handshake
+ // crash the device (sometimes this happens thanks to low/fragmented memory.)
+ Serial.println("Writing check value to EEPROM");
+ eepromWriteCheckValue(hours);
 
-  updateLocalTime();
+     
+  if (ntpUpdate()) {
+    // Generate the closing time.
+    Serial.println("NTP is OK. Generating closing time.");
+    closingTime = generateClosingTime(hours);
+  } else {
+    Serial.println("No NTP.");
+    closingTime = 0;
+  }
 
+ // Construct a message using the hours data, then generate the HTTP request.
+ String message = generateMessage(hours, closingTime);
+ String request = generateHttpRequest(hours, closingTime, message, true);
 
-    // Generate the HTTP request to be sent to ThingSpeak.
-    if (hours == 0) {
+ Serial.println(message);
+ Serial.println(request);
 
-      // Closed has been selected on the dial. Tweet a "random" closed message.
-      randomNumber = random (1, numberClosedStrings);
+ bool messageSent = sendHttpRequest(request, hours);
 
-      turnKnob = false;
+ // If we've got to here then the message has probably gone through, nothing
+ // more we can do on our end.
+ if (messageSent) {
+  eepromWriteCheckValue(EEPROM_OK);
+   Serial.println("Check value cleared from EEPROM.");
+   return true;
+ } else {
+   return false;
+ } 
+}
 
-      // Check if the time is correct.
-      if (timeStatus() != timeSet) {
-        // Add an appropriate failure hashtag.
-        message = closeSpace[randomNumber].leader + " #ntpfailure";
-        return buildRequest(hours, "#ntpfailure", message, true);
-      } else {
-        message = closeSpace[randomNumber].leader + " (It's " + displayTime(hour(localTime), minute(localTime)) + ")";
-      }
+void eepromWriteCheckValue(int value) {
 
-      return buildRequest(hours, displayTime(hour(localTime), minute(localTime)), message, true);
-
-    } else {
-
-      turnKnob = true;
-
-      // Space will be open for a period of time, tweet a "random" open message.
-      randomNumber = random (1, numberOpenStrings);
-
-      // Check if the time is correct.
-      if (timeStatus() != timeSet) {
-        // Add an appropriate failure hashtag.
-        message = openSpace[randomNumber].leader + hours + " hours" + openSpace[randomNumber].punctuation + " #ntpfailure";
-        return buildRequest(hours, "#ntpfailure", message, true);
-      }
-
-      // Increment the timer, if the new value is over 24 hours (midnight) then subtract 24 to make
-      // it into a valid time. If equal to 24 then still subtract 24 so midnight is represented as 00:00
-      closingHour = hour(localTime) + hours;
-      if (closingHour >= 24) {
-        closingHour -= 24;
-      }
-
-
-      // Round the minutes down to the closest quarter-hour. No need for minute level precision.
-      closingMinute = minute(localTime) - (minute(localTime) % 15);
-
-      // If the hour is singular "1" then we need to use the singular text. Otherwise, add the
-      // number and append "hours".
-      if (hours == 1) {
-        message = openSpace[randomNumber].leader + openSpace[randomNumber].singular + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
-      } else {
-        message = openSpace[randomNumber].leader + hours + " hours" + openSpace[randomNumber].punctuation + " (Until ~" + displayTime(closingHour, closingMinute) + ")";
-      }
-
-      return buildRequest(hours, displayTime(closingHour, closingMinute), message, true);
-    }
+  byte lowByte = ((value >> 0) & 0xFF);
+  EEPROM.write(EEPROM_ADDRESS, lowByte);
+  EEPROM.commit();
 
 }
 
-void setup() {
+unsigned int eepromReadCheckValue() {
 
-  // Setup the pin directions
-  pinMode(PIN_LED_RED, OUTPUT);
-  pinMode(PIN_LED_GREEN, OUTPUT);
+  byte lowByte = EEPROM.read(EEPROM_ADDRESS);
+  return lowByte;
+
+}
+
+bool setSpaceStatus(int hours) {
+    // If the hours was 0, disconnect the wifi. Space is closed or NTP failed so not needed anymore.
+    if (hours == 0 || closingTime == 0) {
+      disconnectWifi();
+      spaceStateOpen = false;
+    } else {
+      spaceStateOpen = true;
+    }
+    return spaceStateOpen;
+}
+
+
+void setup() 
+{
+
   pinMode(PIN_BUTTON, INPUT);
   pinMode(PIN_MOTOR_FWD, OUTPUT);
   pinMode(PIN_MOTOR_REV, OUTPUT);
 
-
-  // Turn off all LEDs to give an indication of reboot, then
-  // wait for a bit. Useful for debugging!
-  switchLEDS(LIGHT_OFF);
-
-  delay(500);
+  knob.moveMotor(STOP);
+  
   EEPROM.begin(128);
-  // Start the serial. start of message line break to clear away
-  // from the garbage the ESP8266 dumps out the serial port at boot.
   Serial.begin(115200);
   Serial.println("\n\nStarting OpenBot...");
-  closingHour = 4;
-  turnKnob = false;
-  // We are starting to do work now, red LED on.
-  switchLEDS(LIGHT_RED);
 
-  // Connect to the wifi in station mode.
-  Serial.println("Connecting to '" + String(ssid) + "'");
-  WiFi.mode(WIFI_STA);
-  WiFi.begin();
-
-  // Wait for a connection to be made, then print out the IP address.
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(250);
-    Serial.print(".");
+  // Connect to the Wifi & get the time.
+  connectWifi();
+  
+  // Refresh the NTP server details.
+  // Get the IP address of the NTP servers.
+  IPAddress ntpServerIP;
+  Serial.println("Looking up NTP Server (" + String(ntpServerName) + ")");
+  bool noIP = false;
+  while (!noIP) {
+    noIP = WiFi.hostByName(ntpServerName, ntpServerIP);
   }
-  Serial.print("\nConnected to '" + String(ssid) + "' with IP: ");
-  Serial.println(WiFi.localIP());
-
-  // Start UDP
-  udp.begin(localUDPPort);
-
-  // Look up the IP address of the NTP time server, then set up the
-  // recurring time polling.
-  WiFi.hostByName(ntpServerName, timeServerIP);
-
-  Serial.println("Syncing with NTP server (" + String(ntpServerName) + ")");
-
-  setSyncProvider(getNtpTime);
-  setSyncInterval(NTP_UPDATE_FREQ);
-
-  // Wait for the time to be synced with NTP.
-  if (timeStatus() == timeNotSet) {
-    Serial.println("Could not get time from primary NTP. Attempting secondary NTP server.");
-    String httpRequest = buildRequest(0, "ERR:NTP1", "Failed to retrieve time from primary NTP on boot - " + String(timeServerIP), false);
-    sendHTTPRequest(httpRequest, 0);
-    WiFi.hostByName(ntpServerName2, timeServerIP);
-    time_t set = getNtpTime();
-    if (set != 0) {
-      // Second time sync was successful, set the onboard time.
-      setTime(set);
-    } else {
-      // Thingspeak wants a 15 second delay or it throttles writes and discards data.
-      delay(15500);
-      httpRequest = buildRequest(0, "ERR:NTP2", "Failed to retrieve time from secondary NTP on boot - " + String(timeServerIP), false);
-      sendHTTPRequest(httpRequest, 0);
-    }
-  }
-
-  if (timeStatus() != timeNotSet) {
-    Serial.println("Current time (UTC) from NTP: " + displayTime(hour(), minute()));
-    Serial.println("Current local time (UK):     " + displayTime(hour(localTime), minute(localTime)));
-  }
+  
+  ntp.setNtpIP(ntpServerIP);
 
   unsigned int checkValue = eepromReadCheckValue();
-  if (checkValue != EEPROM_OK) {
-    // The device has rebooted before completing the submission.
+  if (checkValue <= 8) {
+    
+    // The device has rebooted before completing the submission. Is there an internet error?
     Serial.println("Uncompleted submission detected. Resending value '" + String(checkValue) + "'.");
-
-    randomSeed(hour() * second() + minute() / analogRead(A0));
-
-    String httpRequest = createHTTPRequest(checkValue);
-    sendHTTPRequest(httpRequest, checkValue);
-  }
-
-  // Work complete, green LED lit.
-  switchLEDS(LIGHT_GREEN);
-
-}
-
-bool moveKnob(int targetPos) {
-
-  int currentPos = analogRead(A0);
-  char motorDirection;
-  while (!(abs(currentPos - targetPos) <= KNOB_VARIANCE)) {
-      Serial.println("\n\nCurrent knob position: " + String(currentPos));
-      Serial.println("Target knob position:  " + String(targetPos));
-      // Not there yet. Move that knob!
-      
-    if (currentPos > targetPos) {
-      motorDirection = DOWN;
-      Serial.println("Down");
+    if (ntpUpdate()) {
+      // Generate the closing time.
+      Serial.println("NTP is OK. Generating closing time.");
+      closingTime = generateClosingTime(checkValue);
     } else {
-      motorDirection = UP;
-      Serial.println("Up");
+      Serial.println("No NTP.");
+      closingTime = 0;
     }
-    controlMotor(motorDirection);
-    delay(25);
-    controlMotor(STOP);
-    Serial.println("Stop");
-    currentPos = analogRead(A0);
-  } 
+    
+    transmitMessage(checkValue);
+    setSpaceStatus(checkValue);
+    
+  } else {
 
-}
-
-void controlMotor(char direction) {
-
-  char up, down;
-  switch (direction) {
-    case UP:
-      up = HIGH;
-      down = LOW;
-      break;
-    case DOWN:
-      up = LOW;
-      down = HIGH;
-      break;
-    case STOP:
-      up = LOW;
-      down = LOW;
-      break;
+    // We are just booting normally. Grab the time from NTP to prove the connection works.
+    ntpUpdate();
   }
-  digitalWrite(PIN_MOTOR_FWD, up);
-  digitalWrite(PIN_MOTOR_REV, down);
-
-}
-
-
-void updateLocalTime() {
-
-  Serial.println("Refreshing local time.");
-  localTime = TZ.toLocal(now());
-  Serial.println("Local time is: " + displayTime(hour(localTime), minute(localTime)));
-
+  
+  // Disconnect from the wifi.
+  disconnectWifi();
+  
 }
 
 void loop() {
 
-  // Wait for a button press
+  // Is button pressed?
   if (digitalRead(PIN_BUTTON) == LOW) {
-
-    // Set the LEDs to red
-    switchLEDS(LIGHT_RED);
-
+    
+    // Yes, button was pressed
     // Read the ADC value, divide into 8 and round to get the number of hours indicated.
     short knobValue = analogRead(A0);
-    Serial.println("Knob raw value:      " + String(knobValue));
-    int hours = floor(knobValue / 128);
-    Serial.println("Knob hours position: " + String(hours));
+    short hours = floor(knobValue / 128);
+    Serial.println("Raw knob value: " + String(knobValue) + "\tHours value: " + hours);
 
-    // Seed the RNG. It's still rubbish, but perhaps this will make it a bit better.
-    randomSeed(hour() * second() + minute() + knobValue);
+    // Connect to the wifi & update the time from NTP. 
+    // This wifi connection will be maintained for hours specified by the knob.
+    connectWifi();
 
-    String httpRequest = createHTTPRequest(hours);
-    sendHTTPRequest(httpRequest, hours);
-
-    switchLEDS(LIGHT_GREEN);
-
-    moveKnob(CALC_KNOB_VALUE);
-  }
-
-  if (millis() - lastKnobCheck > 30000) {
-    // Update the local time
-    updateLocalTime();
-    if (turnKnob && closingMinute - minute() == 0) {
-      int moveTo = CALC_KNOB_VALUE;
-      moveKnob(moveTo);
-      if (closingHour - hour() == 0) {
-        turnKnob = false;
+    // Transmit the message to Thingspeak & Twitter
+    int failCount = 0;
+    while (!transmitMessage(hours)) {
+      failCount++;
+      Serial.println("Couldn't transmit. Disconnecting Wifi, waiting 1 second & trying again.");
+      disconnectWifi();
+      delay(1000);
+      connectWifi();
+      if (failCount > 5) {
+        ESP.restart();
+        // Superstition says that this is required sometimes to make the ESP reboot cleanly.
+        delay(1000);
       }
     }
-    lastKnobCheck = millis();
-  }
 
+    // Move the knob.
+    int requiredKnobValue = generateKnobAnalogValue(closingTime);
+
+    Serial.println("Required Analog Knob Value: " + String(requiredKnobValue));
+    
+    moveKnob(requiredKnobValue);
+
+    setSpaceStatus(hours);
+      
+  } else {
+    // No, button wasn't pressed.
+    if (spaceStateOpen && millis() - lastChecked > 15000) {
+      // Move the knob as required.
+      int requiredKnobValue = generateKnobAnalogValue(closingTime);
+      moveKnob(requiredKnobValue);
+      
+      // If the time is 15 minutes before the anticipated closing time disconnect the wifi
+      // and set the status to closed. This gives time for Marvin (the space controller)
+      // to close the space on time - it takes 15 minutes for a wifi device's presence to decay.
+
+      int preClosingMinute = minute(closingTime) - 15;
+
+      if (preClosingMinute < 0) {
+        preClosingMinute += 60;
+      }
+      
+      if (round((closingTime - now()) / 3600.0f) == 0 && minute() == preClosingMinute) {
+        disconnectWifi();
+        spaceStateOpen = false;
+        Serial.println("Space Status: Closed");
+      }
+      lastChecked = millis();
+    } // End if space status open     
+  }
 }
+
