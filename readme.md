@@ -25,8 +25,6 @@ Manager
 
 ## Hardware
 
-**Caution** - PCB layout/schematic is currently untested.
-
 Schematic and PCB created in KiCad.
 
 Gerbers as submitted to OSHPark are available in the gerbers folder 
